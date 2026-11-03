@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Falden, Inc.
+#
+# attest: the 1.0 witness's attestation workflow (P12-38; audit/p12-attest-design.md, section 2.5).
+# This file is the one source: the seed commit of each 1.0 subject repository (P12-3C) and the
+# public canary on R1 (falden-fixtures/attest-canary, witness/canary.py) carry it byte for byte, at
+# .github/workflows/attest.yml.
+#
+# It runs only when dispatched, never on a push: a push-triggered attestation would sign whatever
+# the pusher chose, at the moment the pusher chose. Only witness/dispatch.py dispatches it, with two
+# inputs: the event id (the driver's journal id for the write it witnesses) and the dispatch id,
+# `<event id>.d<n>`, which is unique to the dispatch and names the run. It writes one statement,
+# witness.json, in format falden-witness/1:
+#
+#   {"dispatch_id":"...","event_id":"...","format":"falden-witness/1","ref":"...","repository_id":N,"sha":"..."}
+#
+# plus a newline, keys in that order. The dispatcher computes the same bytes locally, so it knows the
+# digest before the run, and two dispatches at one commit sign different digests. Nothing is checked
+# out. The statement is signed through GitHub Actions OIDC only.
+#
+# The attest step runs only on a public repository: on Free, Pro and Team, artifact attestations
+# need one (REG-172). On the private rehearsal repositories the step shows `skipped` and the job log's
+# sha256 line is what the dispatcher checks; on a public repository a skipped step is an error.
+#
+# No `concurrency` key: GitHub keeps at most one pending run per concurrency group and cancels the
+# older one, which would drop attestations in a burst of dispatches.
+#
+# The action is pinned by commit: actions/attest's tag v4.2.2 (audit/p12-attest-design.md, A2),
+# resolved to its commit by one anonymous read-only GET whose request and answer, Date included, are
+# kept in witness/attest-pin.json. witness/canary.py and the seed check (P12-3C) refuse anything but
+# a 40-hex commit there, and tools/dispatch_test.py holds the pin to that recorded answer.
+name: attest
+run-name: attest ${{ inputs.dispatch_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      event_id:
+        description: The event this run witnesses
+        required: true
+        type: string
+      dispatch_id:
+        description: Unique to this dispatch, <event id>.d<n>
+        required: true
+        type: string
+permissions: {}
+jobs:
+  attest:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Write the statement
+        env:
+          EVENT_ID: ${{ inputs.event_id }}
+          DISPATCH_ID: ${{ inputs.dispatch_id }}
+          REPO_ID: ${{ github.repository_id }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          for v in "$EVENT_ID" "$DISPATCH_ID"; do
+            case "$v" in ''|*[!A-Za-z0-9._-]*) echo "each id must match [A-Za-z0-9._-]{1,64}"; exit 1 ;; esac
+            [ "${#v}" -le 64 ] || { echo "each id must be at most 64 characters"; exit 1; }
+          done
+          n="${DISPATCH_ID#"$EVENT_ID".d}"
+          case "$n" in "$DISPATCH_ID"|''|0*|*[!0-9]*) echo "the dispatch id must be <event id>.d<n>"; exit 1 ;; esac
+          case "$REF" in *'"'*|*'\'*) echo "the ref holds a character the statement cannot carry"; exit 1 ;; esac
+          case "$REPO_ID" in ''|*[!0-9]*) echo "the repository id must be a number"; exit 1 ;; esac
+          case "$SHA" in *[!0-9a-f]*|'') echo "the sha must be lowercase hex"; exit 1 ;; esac
+          printf '{"dispatch_id":"%s","event_id":"%s","format":"falden-witness/1","ref":"%s","repository_id":%s,"sha":"%s"}\n' \
+            "$DISPATCH_ID" "$EVENT_ID" "$REF" "$REPO_ID" "$SHA" > witness.json
+          sha256sum witness.json
+      - name: Attest the statement
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2, read Fri, 02 Oct 2026 03:11:59 GMT
+        with:
+          subject-path: witness.json

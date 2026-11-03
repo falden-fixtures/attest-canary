@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Falden, Inc.
+#
+# never-starts: the canary's run that never starts (audit/p12-attest-design.md, section 4; REG-172).
+# Only falden-fixtures/attest-canary carries it, beside the live attest.yml, and no seed does. Its one
+# job asks for a runner label no runner has, so its run stays queued until witness/dispatch.py cancels
+# it (2.3 row 6). Dispatched only by witness/canary.py, through the dispatcher, like every dispatch.
+name: never-starts
+run-name: never-starts ${{ inputs.dispatch_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      event_id:
+        description: The canary event this run stands for
+        required: true
+        type: string
+      dispatch_id:
+        description: Unique to this dispatch, <event id>.d<n>
+        required: true
+        type: string
+permissions: {}
+jobs:
+  wait:
+    runs-on: falden-canary-no-such-runner
+    steps:
+      - name: Never reached
+        run: "true"
